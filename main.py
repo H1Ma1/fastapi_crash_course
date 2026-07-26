@@ -1,15 +1,35 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import uvicorn
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from database import create_tables, delete_tables
+from router import router as tasks_router
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await create_tables()
+    print("База готова")
+    yield
+    await delete_tables()
+    print("База очищена")
+
+app = FastAPI(lifespan=lifespan)
+
+
+app = FastAPI(lifespan=lifespan)
+app.include_router(tasks_router)
 
 
 
-@app.get("/users")
-async def get_users():
-    ...
-    return [{"id":1, "name": "Artem"}]
 
 
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+
+tasks = []
+
+
+
+
+
+
+# if __name__ == "__main__":
+#     uvicorn.run("main:app", reload=True)
