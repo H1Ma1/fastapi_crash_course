@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import create_tables
-from router import router as tasks_router
+from router import router as watch_read_play_router
 
 
 @asynccontextmanager
@@ -29,4 +29,4 @@ app.add_middleware(
 )
 
 
-app.include_router(tasks_router)
+app.include_router(watch_read_play_router)

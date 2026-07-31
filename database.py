@@ -1,149 +1,98 @@
 import os
+from pathlib import Path
 
-import httpx
 from dotenv import load_dotenv
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from models import Base, CatalogItem, User
 
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 
-TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
-TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("Не найдена переменная DATABASE_URL")
 
 
-if not TURSO_DATABASE_URL:
-    raise RuntimeError("Не найдена переменная TURSO_DATABASE_URL")
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=True,
+)
 
-if not TURSO_AUTH_TOKEN:
-    raise RuntimeError("Не найдена переменная TURSO_AUTH_TOKEN")
-
-
-def get_turso_http_url() -> str:
-    """
-    Turso даёт URL вида:
-    libsql://fastapi-tasks-h1ma1.aws-us-west-2.turso.io
-
-    Для HTTP API нужен:
-    https://fastapi-tasks-h1ma1.aws-us-west-2.turso.io/v2/pipeline
-    """
-    if TURSO_DATABASE_URL.startswith("libsql://"):
-        base_url = TURSO_DATABASE_URL.replace("libsql://", "https://", 1)
-    else:
-        base_url = TURSO_DATABASE_URL
-
-    return base_url.rstrip("/") + "/v2/pipeline"
+async_session_maker = async_sessionmaker(
+    engine,
+    expire_on_commit=False,
+)
 
 
-TURSO_HTTP_URL = get_turso_http_url()
-
-
-def to_turso_arg(value):
-    """
-    Turso ждёт аргументы в специальном формате:
-    {"type": "text", "value": "..."}
-    {"type": "integer", "value": "1"}
-    """
-    if value is None:
-        return {"type": "null"}
-
-    if isinstance(value, bool):
-        return {
-            "type": "integer",
-            "value": "1" if value else "0",
-        }
-
-    if isinstance(value, int):
-        return {
-            "type": "integer",
-            "value": str(value),
-        }
-
-    if isinstance(value, float):
-        return {
-            "type": "float",
-            "value": str(value),
-        }
-
-    return {
-        "type": "text",
-        "value": str(value),
-    }
-
-
-async def execute_sql(sql: str, args: list | None = None) -> dict:
-    stmt = {
-        "sql": sql,
-    }
-
-    if args is not None:
-        stmt["args"] = [to_turso_arg(arg) for arg in args]
-
-    payload = {
-        "requests": [
-            {
-                "type": "execute",
-                "stmt": stmt,
-            },
-            {
-                "type": "close",
-            },
-        ]
-    }
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(
-            TURSO_HTTP_URL,
-            headers={
-                "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-
-    response.raise_for_status()
-
-    data = response.json()
-    first_result = data["results"][0]
-
-    if first_result["type"] != "ok":
-        raise RuntimeError(f"Turso error: {first_result}")
-
-    return first_result["response"]["result"]
-
-
-def parse_turso_rows(result: dict) -> list[dict]:
-    cols = result.get("cols", [])
-    rows = result.get("rows", [])
-
-    col_names = [col["name"] for col in cols]
-
-    parsed_rows = []
-
-    for row in rows:
-        item = {}
-
-        for col_name, cell in zip(col_names, row):
-            if cell["type"] == "null":
-                item[col_name] = None
-            else:
-                item[col_name] = cell.get("value")
-
-        parsed_rows.append(item)
-
-    return parsed_rows
+async def get_session():
+    async with async_session_maker() as session:
+        yield session
 
 
 async def create_tables():
-    await execute_sql(
-        """
-        CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    await seed_demo_data()
+
+
+async def seed_demo_data():
+    async with async_session_maker() as session:
+        demo_user_result = await session.execute(
+            select(User).where(User.id == 1)
         )
-        """
-    )
+        demo_user = demo_user_result.scalar_one_or_none()
 
+        if demo_user is None:
+            demo_user = User(
+                id=1,
+                google_id="demo-user-1",
+                email="demo@example.com",
+                name="Demo User",
+            )
+            session.add(demo_user)
 
-async def delete_tables():
-    await execute_sql("DROP TABLE IF EXISTS tasks")
+        catalog_items = [
+            ("The Witcher 3", "game"),
+            ("Cyberpunk 2077", "game"),
+            ("Elden Ring", "game"),
+            ("Red Dead Redemption 2", "game"),
+            ("God of War", "game"),
+
+            ("Dune", "book"),
+            ("1984", "book"),
+            ("The Hobbit", "book"),
+            ("Harry Potter", "book"),
+            ("Atomic Habits", "book"),
+
+            ("Breaking Bad", "movie"),
+            ("Game of Thrones", "movie"),
+            ("Interstellar", "movie"),
+            ("The Lord of the Rings", "movie"),
+            ("The Last of Us", "movie"),
+        ]
+
+        for title, category in catalog_items:
+            existing_result = await session.execute(
+                select(CatalogItem).where(
+                    CatalogItem.title == title,
+                    CatalogItem.category == category,
+                )
+            )
+            existing_item = existing_result.scalar_one_or_none()
+
+            if existing_item is None:
+                session.add(
+                    CatalogItem(
+                        title=title,
+                        category=category,
+                        is_approved=True,
+                    )
+                )
+
+        await session.commit()
