@@ -46,3 +46,22 @@ class UserItemSchema(BaseModel):
 class ItemIdSchema(BaseModel):
     ok: bool = True
     item_id: int
+
+
+class GoogleLoginSchema(BaseModel):
+    credential: str
+
+
+class UserSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str | None = None
+    name: str | None = None
+    picture: str | None = None
+
+
+class TokenSchema(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserSchema

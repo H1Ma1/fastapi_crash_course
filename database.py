@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from models import Base, CatalogItem, User
@@ -94,5 +94,19 @@ async def seed_demo_data():
                         is_approved=True,
                     )
                 )
+
+        await session.flush()
+
+        await session.execute(
+            text(
+                """
+                SELECT setval(
+                    pg_get_serial_sequence('users', 'id'),
+                    COALESCE((SELECT MAX(id) FROM users), 1),
+                    true
+                )
+                """
+            )
+        )
 
         await session.commit()

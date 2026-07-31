@@ -1,3 +1,4 @@
+from models import CatalogItem, User, UserItem
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -6,6 +7,62 @@ from schemas import UserItemAddSchema, UserItemUpdateSchema
 
 
 DEMO_USER_ID = 1
+
+
+class UserRepository:
+    @classmethod
+    async def get_or_create_google_user(
+        cls,
+        session: AsyncSession,
+        google_user: dict,
+    ) -> User:
+        google_id = google_user["google_id"]
+        email = google_user["email"]
+        name = google_user.get("name")
+        picture = google_user.get("picture")
+
+        result = await session.execute(
+            select(User).where(User.google_id == google_id)
+        )
+        user = result.scalar_one_or_none()
+
+        if user is not None:
+            user.email = email
+            user.name = name
+            user.picture = picture
+
+            await session.commit()
+            await session.refresh(user)
+
+            return user
+
+        result = await session.execute(
+            select(User).where(User.email == email)
+        )
+        user = result.scalar_one_or_none()
+
+        if user is not None:
+            user.google_id = google_id
+            user.name = name
+            user.picture = picture
+
+            await session.commit()
+            await session.refresh(user)
+
+            return user
+
+        user = User(
+            google_id=google_id,
+            email=email,
+            name=name,
+            picture=picture,
+        )
+
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        return user
 
 
 class CatalogRepository:
