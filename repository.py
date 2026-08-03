@@ -1,10 +1,11 @@
 import re
 import unicodedata
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from models import CatalogItem, User, UserItem
+from models import CatalogItem, Friendship, User, UserItem
 from schemas import UserItemAddSchema, UserItemUpdateSchema
 
 
@@ -12,15 +13,6 @@ DEMO_USER_ID = 1
 
 
 def normalize_title(title: str) -> str:
-    """
-    Превращает название в удобный вид для сравнения.
-
-    Примеры:
-    "DELTARUNE" -> "deltarune"
-    "Del Tarune" -> "deltarune"
-    "Baldur's Gate 3" -> "baldursgate3"
-    "Baldurs Gate 3" -> "baldursgate3"
-    """
     title = unicodedata.normalize("NFKD", title)
     title = "".join(char for char in title if not unicodedata.combining(char))
     title = title.lower()
@@ -30,15 +22,39 @@ def normalize_title(title: str) -> str:
     return title
 
 
+def normalize_username(username: str) -> str:
+    username = username.strip().lower()
+
+    if username.startswith("@"):
+        username = username[1:]
+
+    return username
+
+
+def user_to_public_dict(user: User) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "name": user.name,
+        "picture": user.picture,
+    }
+
+
+def friend_request_to_dict(friendship: Friendship) -> dict:
+    return {
+        "id": friendship.id,
+        "status": friendship.status,
+        "requester": user_to_public_dict(friendship.requester),
+        "receiver": user_to_public_dict(friendship.receiver),
+        "created_at": friendship.created_at,
+    }
+
+
 async def find_catalog_item_by_title(
     session: AsyncSession,
     title: str,
     category: str,
 ) -> CatalogItem | None:
-    """
-    Ищет элемент в общем каталоге по названию,
-    игнорируя регистр, пробелы, знаки препинания.
-    """
     normalized_user_title = normalize_title(title)
 
     result = await session.execute(
@@ -61,23 +77,6 @@ async def sync_custom_items_with_catalog(
     session: AsyncSession,
     user_id: int,
 ):
-    """
-    Если пользователь раньше добавил своё название,
-    а теперь такое название уже есть в catalog_items,
-    то мы превращаем custom item в нормальную ссылку на catalog_item.
-
-    Пример:
-    user_items:
-      custom_title = "DelTARUNE"
-      catalog_item_id = null
-
-    catalog_items:
-      title = "DELTARUNE"
-
-    После синхронизации:
-      custom_title = null
-      catalog_item_id = id игры DELTARUNE
-    """
     result = await session.execute(
         select(UserItem).where(
             UserItem.user_id == user_id,
@@ -182,6 +181,76 @@ class UserRepository:
 
         return user
 
+    @classmethod
+    async def update_username(
+        cls,
+        session: AsyncSession,
+        user_id: int,
+        username: str,
+    ) -> User:
+        username = normalize_username(username)
+
+        user = await session.get(User, user_id)
+
+        if user is None:
+            raise ValueError("Пользователь не найден")
+
+        result = await session.execute(
+            select(User).where(User.username == username)
+        )
+        existing_user = result.scalar_one_or_none()
+
+        if existing_user is not None and existing_user.id != user_id:
+            raise ValueError("Этот username уже занят")
+
+        user.username = username
+
+        await session.commit()
+        await session.refresh(user)
+
+        return user
+
+    @classmethod
+    async def search_by_username(
+        cls,
+        session: AsyncSession,
+        current_user_id: int,
+        username: str,
+    ) -> list[dict]:
+        username = normalize_username(username)
+
+        if len(username) < 2:
+            return []
+
+        result = await session.execute(
+            select(User)
+            .where(
+                User.id != current_user_id,
+                User.username != None,
+                User.username.ilike(f"%{username}%"),
+            )
+            .order_by(User.username)
+            .limit(10)
+        )
+
+        users = result.scalars().all()
+
+        return [user_to_public_dict(user) for user in users]
+
+    @classmethod
+    async def find_by_username(
+        cls,
+        session: AsyncSession,
+        username: str,
+    ) -> User | None:
+        username = normalize_username(username)
+
+        result = await session.execute(
+            select(User).where(User.username == username)
+        )
+
+        return result.scalar_one_or_none()
+
 
 class CatalogRepository:
     @classmethod
@@ -208,6 +277,8 @@ class UserItemRepository:
         cls,
         session: AsyncSession,
         user_id: int = DEMO_USER_ID,
+        category: str | None = None,
+        status: str | None = None,
     ) -> list[dict]:
         await sync_custom_items_with_catalog(session, user_id)
 
@@ -215,8 +286,15 @@ class UserItemRepository:
             select(UserItem, CatalogItem.title)
             .outerjoin(CatalogItem, UserItem.catalog_item_id == CatalogItem.id)
             .where(UserItem.user_id == user_id)
-            .order_by(UserItem.id.desc())
         )
+
+        if category:
+            stmt = stmt.where(UserItem.category == category)
+
+        if status:
+            stmt = stmt.where(UserItem.status == status)
+
+        stmt = stmt.order_by(UserItem.id.desc())
 
         result = await session.execute(stmt)
         rows = result.all()
@@ -369,6 +447,279 @@ class UserItemRepository:
             return False
 
         await session.delete(user_item)
+        await session.commit()
+
+        return True
+
+
+class FriendshipRepository:
+    @classmethod
+    async def find_relation_between_users(
+        cls,
+        session: AsyncSession,
+        user_id: int,
+        other_user_id: int,
+    ) -> Friendship | None:
+        result = await session.execute(
+            select(Friendship).where(
+                or_(
+                    and_(
+                        Friendship.requester_id == user_id,
+                        Friendship.receiver_id == other_user_id,
+                    ),
+                    and_(
+                        Friendship.requester_id == other_user_id,
+                        Friendship.receiver_id == user_id,
+                    ),
+                )
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    @classmethod
+    async def are_friends(
+        cls,
+        session: AsyncSession,
+        user_id: int,
+        other_user_id: int,
+    ) -> bool:
+        relation = await cls.find_relation_between_users(
+            session,
+            user_id,
+            other_user_id,
+        )
+
+        return relation is not None and relation.status == "accepted"
+
+    @classmethod
+    async def get_friendship_with_users(
+        cls,
+        session: AsyncSession,
+        friendship_id: int,
+    ) -> Friendship:
+        result = await session.execute(
+            select(Friendship)
+            .options(
+                selectinload(Friendship.requester),
+                selectinload(Friendship.receiver),
+            )
+            .where(Friendship.id == friendship_id)
+        )
+
+        return result.scalar_one()
+
+    @classmethod
+    async def send_request(
+        cls,
+        session: AsyncSession,
+        requester_id: int,
+        receiver_id: int,
+    ) -> dict:
+        if requester_id == receiver_id:
+            raise ValueError("Нельзя добавить самого себя в друзья")
+
+        receiver = await session.get(User, receiver_id)
+
+        if receiver is None:
+            raise ValueError("Пользователь не найден")
+
+        relation = await cls.find_relation_between_users(
+            session,
+            requester_id,
+            receiver_id,
+        )
+
+        if relation is not None:
+            if relation.status == "accepted":
+                raise ValueError("Вы уже друзья")
+
+            if relation.status == "pending":
+                if relation.requester_id == requester_id:
+                    raise ValueError("Заявка уже отправлена")
+
+                raise ValueError("Этот пользователь уже отправил тебе заявку")
+
+            if relation.status == "declined":
+                relation.requester_id = requester_id
+                relation.receiver_id = receiver_id
+                relation.status = "pending"
+
+                await session.commit()
+                await session.refresh(relation)
+
+                relation = await cls.get_friendship_with_users(session, relation.id)
+
+                return friend_request_to_dict(relation)
+
+        friendship = Friendship(
+            requester_id=requester_id,
+            receiver_id=receiver_id,
+            status="pending",
+        )
+
+        session.add(friendship)
+        await session.commit()
+        await session.refresh(friendship)
+
+        friendship = await cls.get_friendship_with_users(session, friendship.id)
+
+        return friend_request_to_dict(friendship)
+
+    @classmethod
+    async def get_incoming_requests(
+        cls,
+        session: AsyncSession,
+        user_id: int,
+    ) -> list[dict]:
+        result = await session.execute(
+            select(Friendship)
+            .options(
+                selectinload(Friendship.requester),
+                selectinload(Friendship.receiver),
+            )
+            .where(
+                Friendship.receiver_id == user_id,
+                Friendship.status == "pending",
+            )
+            .order_by(Friendship.id.desc())
+        )
+
+        requests = result.scalars().all()
+
+        return [friend_request_to_dict(request) for request in requests]
+
+    @classmethod
+    async def get_outgoing_requests(
+        cls,
+        session: AsyncSession,
+        user_id: int,
+    ) -> list[dict]:
+        result = await session.execute(
+            select(Friendship)
+            .options(
+                selectinload(Friendship.requester),
+                selectinload(Friendship.receiver),
+            )
+            .where(
+                Friendship.requester_id == user_id,
+                Friendship.status == "pending",
+            )
+            .order_by(Friendship.id.desc())
+        )
+
+        requests = result.scalars().all()
+
+        return [friend_request_to_dict(request) for request in requests]
+
+    @classmethod
+    async def accept_request(
+        cls,
+        session: AsyncSession,
+        request_id: int,
+        current_user_id: int,
+    ) -> bool:
+        friendship = await session.get(Friendship, request_id)
+
+        if friendship is None:
+            return False
+
+        if friendship.receiver_id != current_user_id:
+            return False
+
+        if friendship.status != "pending":
+            return False
+
+        friendship.status = "accepted"
+
+        await session.commit()
+
+        return True
+
+    @classmethod
+    async def decline_request(
+        cls,
+        session: AsyncSession,
+        request_id: int,
+        current_user_id: int,
+    ) -> bool:
+        friendship = await session.get(Friendship, request_id)
+
+        if friendship is None:
+            return False
+
+        if friendship.receiver_id != current_user_id:
+            return False
+
+        if friendship.status != "pending":
+            return False
+
+        friendship.status = "declined"
+
+        await session.commit()
+
+        return True
+
+    @classmethod
+    async def get_friends(
+        cls,
+        session: AsyncSession,
+        user_id: int,
+    ) -> list[dict]:
+        result = await session.execute(
+            select(Friendship)
+            .options(
+                selectinload(Friendship.requester),
+                selectinload(Friendship.receiver),
+            )
+            .where(
+                or_(
+                    Friendship.requester_id == user_id,
+                    Friendship.receiver_id == user_id,
+                ),
+                Friendship.status == "accepted",
+            )
+        )
+
+        friendships = result.scalars().all()
+
+        friends = []
+
+        for friendship in friendships:
+            if friendship.requester_id == user_id:
+                friend = friendship.receiver
+            else:
+                friend = friendship.requester
+
+            friends.append(
+                {
+                    "friendship_id": friendship.id,
+                    "friend": user_to_public_dict(friend),
+                }
+            )
+
+        return friends
+
+    @classmethod
+    async def delete_friend(
+        cls,
+        session: AsyncSession,
+        user_id: int,
+        friend_id: int,
+    ) -> bool:
+        friendship = await cls.find_relation_between_users(
+            session,
+            user_id,
+            friend_id,
+        )
+
+        if friendship is None:
+            return False
+
+        if friendship.status != "accepted":
+            return False
+
+        await session.delete(friendship)
         await session.commit()
 
         return True

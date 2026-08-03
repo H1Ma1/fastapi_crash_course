@@ -64,17 +64,19 @@ async def seed_demo_data():
             ("Red Dead Redemption 2", "game"),
             ("God of War", "game"),
 
+            ("Attack on Titan", "anime"),
+            ("Death Note", "anime"),
+            ("Fullmetal Alchemist: Brotherhood", "anime"),
+            ("One-Punch Man", "anime"),
+            ("Demon Slayer: Kimetsu no Yaiba", "anime"),
+
             ("Dune", "book"),
             ("1984", "book"),
             ("The Hobbit", "book"),
-            ("Harry Potter", "book"),
+            ("Harry Potter and the Philosopher's Stone", "book"),
             ("Atomic Habits", "book"),
 
-            ("Breaking Bad", "movie"),
-            ("Game of Thrones", "movie"),
-            ("Interstellar", "movie"),
-            ("The Lord of the Rings", "movie"),
-            ("The Last of Us", "movie"),
+
         ]
 
         for title, category in catalog_items:
