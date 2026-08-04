@@ -9,6 +9,24 @@ Category = Literal["game", "book", "anime"]
 Status = Literal["planned", "completed", "dropped"]
 FriendshipStatus = Literal["pending", "accepted", "declined"]
 
+def normalize_username_value(username: str) -> str:
+    username = username.strip().lower()
+
+    if username.startswith("@"):
+        username = username[1:]
+
+    return username
+
+
+def validate_username_value(username: str) -> str:
+    username = normalize_username_value(username)
+
+    if not re.fullmatch(r"[a-z0-9_]{3,20}", username):
+        raise ValueError(
+            "Username должен быть 3-20 символов: только латинские буквы, цифры и _"
+        )
+
+    return username
 
 class CatalogItemSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -31,7 +49,18 @@ class UserItemAddSchema(BaseModel):
 class UserItemUpdateSchema(BaseModel):
     status: Status | None = None
     notes: str | None = None
+    rating: int | None = None
 
+    @field_validator("rating")
+    @classmethod
+    def validate_rating(cls, rating: int | None) -> int | None:
+        if rating is None:
+            return rating
+
+        if rating < 1 or rating > 10:
+            raise ValueError("Оценка должна быть от 1 до 10")
+
+        return rating
 
 class UserItemSchema(BaseModel):
     id: int
@@ -41,8 +70,10 @@ class UserItemSchema(BaseModel):
     custom_title: str | None = None
     category: Category
     status: Status
+    rating: int | None = None
     notes: str | None = None
     created_at: datetime | str
+    
 
 
 class ItemIdSchema(BaseModel):
@@ -111,3 +142,34 @@ class FriendRequestSchema(BaseModel):
 class FriendSchema(BaseModel):
     friendship_id: int
     friend: UserPublicSchema
+
+class RegisterSchema(BaseModel):
+    username: str
+    password: str
+    name: str | None = None
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, username: str) -> str:
+        return validate_username_value(username)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, password: str) -> str:
+        if len(password) < 6:
+            raise ValueError("Пароль должен быть минимум 6 символов")
+
+        if len(password) > 72:
+            raise ValueError("Пароль слишком длинный. Максимум 72 символа")
+
+        return password
+
+
+class LoginSchema(BaseModel):
+    username: str
+    password: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, username: str) -> str:
+        return normalize_username_value(username)

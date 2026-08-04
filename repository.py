@@ -1,6 +1,7 @@
 import re
 import unicodedata
 
+from auth import hash_password, verify_password
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -250,6 +251,104 @@ class UserRepository:
         )
 
         return result.scalar_one_or_none()
+    @classmethod
+    async def register_with_password(
+        cls,
+        session: AsyncSession,
+        username: str,
+        password: str,
+        name: str | None = None,
+    ) -> User:
+        username = normalize_username(username)
+
+        result = await session.execute(
+            select(User).where(User.username == username)
+        )
+        existing_user = result.scalar_one_or_none()
+
+        if existing_user is not None:
+            raise ValueError("Этот username уже занят")
+
+        user = User(
+            username=username,
+            password_hash=hash_password(password),
+            name=name or username,
+        )
+
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        return user
+
+    @classmethod
+    async def login_with_password(
+        cls,
+        session: AsyncSession,
+        username: str,
+        password: str,
+    ) -> User:
+        username = normalize_username(username)
+
+        result = await session.execute(
+            select(User).where(User.username == username)
+        )
+        user = result.scalar_one_or_none()
+
+        if user is None:
+            raise ValueError("Неверный username или пароль")
+
+        if user.password_hash is None:
+            raise ValueError("У этого аккаунта нет входа по паролю")
+
+        if not verify_password(password, user.password_hash):
+            raise ValueError("Неверный username или пароль")
+
+        return user
+    @classmethod
+    async def link_google_to_user(
+        cls,
+        session: AsyncSession,
+        user_id: int,
+        google_user: dict,
+    ) -> User:
+        google_id = google_user["google_id"]
+        email = google_user["email"]
+        name = google_user.get("name")
+        picture = google_user.get("picture")
+
+        current_user = await session.get(User, user_id)
+
+        if current_user is None:
+            raise ValueError("Пользователь не найден")
+
+        result = await session.execute(
+            select(User).where(User.google_id == google_id)
+        )
+        user_with_google = result.scalar_one_or_none()
+
+        if user_with_google is not None and user_with_google.id != user_id:
+            raise ValueError("Этот Google аккаунт уже привязан к другому пользователю")
+
+        result = await session.execute(
+            select(User).where(User.email == email)
+        )
+        user_with_email = result.scalar_one_or_none()
+
+        if user_with_email is not None and user_with_email.id != user_id:
+            raise ValueError("Этот email уже используется другим аккаунтом")
+
+        current_user.google_id = google_id
+        current_user.email = email
+        current_user.picture = picture
+
+        if not current_user.name and name:
+            current_user.name = name
+
+        await session.commit()
+        await session.refresh(current_user)
+
+        return current_user
 
 
 class CatalogRepository:
@@ -311,6 +410,7 @@ class UserItemRepository:
                     "custom_title": user_item.custom_title,
                     "category": user_item.category,
                     "status": user_item.status,
+                    "rating": user_item.rating,
                     "notes": user_item.notes,
                     "created_at": user_item.created_at.isoformat()
                     if user_item.created_at
@@ -417,11 +517,31 @@ class UserItemRepository:
         if user_item is None:
             return False
 
-        if data.status is not None:
+        fields_set = data.model_fields_set
+
+        next_status = user_item.status
+
+        if "status" in fields_set and data.status is not None:
+            next_status = data.status
+
+        if "rating" in fields_set and data.rating is not None:
+            if next_status != "completed":
+                raise ValueError("Оценку можно поставить только завершённому элементу")
+
+        if "status" in fields_set and data.status is not None:
             user_item.status = data.status
 
-        if data.notes is not None:
+            if user_item.status != "completed":
+                user_item.rating = None
+
+        if "notes" in fields_set:
             user_item.notes = data.notes
+
+        if "rating" in fields_set:
+            if data.rating is not None and user_item.status != "completed":
+                raise ValueError("Оценку можно поставить только завершённому элементу")
+
+            user_item.rating = data.rating
 
         await session.commit()
 

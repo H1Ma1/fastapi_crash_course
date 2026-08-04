@@ -25,6 +25,8 @@ from schemas import (
     UserItemUpdateSchema,
     UserPublicSchema,
     UsernameUpdateSchema,
+    LoginSchema,
+    RegisterSchema,
 )
 
 
@@ -42,6 +44,79 @@ async def google_login(
         session,
         google_user,
     )
+
+    access_token = create_access_token(user.id)
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user,
+    }
+
+
+@router.post("/auth/google/link")
+async def link_google_account(
+    login_data: GoogleLoginSchema,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    google_user = verify_google_token(login_data.credential)
+
+    try:
+        user = await UserRepository.link_google_to_user(
+            session=session,
+            user_id=current_user.id,
+            google_user=google_user,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "username": user.username,
+        "name": user.name,
+        "picture": user.picture,
+    }
+
+
+@router.post("/auth/register", response_model=TokenSchema)
+async def register_with_password(
+    register_data: RegisterSchema,
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        user = await UserRepository.register_with_password(
+            session=session,
+            username=register_data.username,
+            password=register_data.password,
+            name=register_data.name,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    access_token = create_access_token(user.id)
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user,
+    }
+
+
+@router.post("/auth/login", response_model=TokenSchema)
+async def login_with_password(
+    login_data: LoginSchema,
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        user = await UserRepository.login_with_password(
+            session=session,
+            username=login_data.username,
+            password=login_data.password,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=401, detail=str(error))
 
     access_token = create_access_token(user.id)
 
@@ -139,12 +214,15 @@ async def update_user_item(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    updated = await UserItemRepository.update_one(
-        session,
-        item_id,
-        item,
-        current_user.id,
-    )
+    try:
+        updated = await UserItemRepository.update_one(
+            session,
+            item_id,
+            item,
+            current_user.id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
 
     if not updated:
         raise HTTPException(status_code=404, detail="Элемент не найден")

@@ -17,6 +17,7 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
 
     username: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
 
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     picture: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -61,6 +62,7 @@ class UserItem(Base):
     status: Mapped[str] = mapped_column(String, default="planned", nullable=False)
 
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,

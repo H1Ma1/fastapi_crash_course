@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from passlib.context import CryptContext
 
 import jwt
 from dotenv import load_dotenv
@@ -33,6 +34,16 @@ if not JWT_SECRET_KEY:
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+password_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    return password_context.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return password_context.verify(password, password_hash)
 
 
 def verify_google_token(credential: str) -> dict:
